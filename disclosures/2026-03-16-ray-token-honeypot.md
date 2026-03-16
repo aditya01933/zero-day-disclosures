@@ -69,14 +69,38 @@ function emitTransfer(address from, address to, uint256 value) internal {
 
 ## The Controller Contract
 
-| Field        | Value                                                                                                                 |
-| ------------ | --------------------------------------------------------------------------------------------------------------------- |
-| Address      | [0x610b10d3671fef5dad68283a08c19d466da5bf2b](https://etherscan.io/address/0x610b10d3671fef5dad68283a08c19d466da5bf2b) |
-| Source Code  | **NOT VERIFIED** (deliberately hidden)                                                                                |
-| Deployed     | ~42 days before RAY token                                                                                             |
-| Transactions | 129+ from multiple distinct addresses                                                                                 |
+| Field           | Value                                                                                                                 |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Address         | [0x610b10d3671fef5dad68283a08c19d466da5bf2b](https://etherscan.io/address/0x610b10d3671fef5dad68283a08c19d466da5bf2b) |
+| Source Code     | **NOT VERIFIED** (deliberately hidden)                                                                                |
+| Deployed        | ~42 days before RAY token                                                                                             |
+| Transactions    | 129+ from multiple distinct addresses                                                                                 |
+| Total functions | 12 (reverse-engineered from bytecode)                                                                                 |
 
 The controller was deployed weeks before RAY, suggesting **reusable honeypot infrastructure**. Multiple distinct addresses interact with it, indicating it likely serves multiple scam tokens.
+
+### Reverse-Engineered Controller Functions
+
+Bytecode disassembly and 4byte.directory lookup revealed 12 functions:
+
+| Selector     | Function                    | Purpose                                            |
+| ------------ | --------------------------- | -------------------------------------------------- |
+| `0x478d3305` | Unknown (gate check)        | Called by RAY on every transfer — blocks or allows |
+| `0xab1b4fa3` | Unknown (management)        | Modify blacklist/settings (129 txns observed)      |
+| `0x90386bbf` | `withdrawAllETH()`          | **Drain all ETH from controller**                  |
+| `0xae4dd0fc` | `withdrawAllToken(address)` | **Drain any ERC-20 token**                         |
+| `0x8ea5b802` | `balanceOfETH()`            | Check ETH balance in controller                    |
+| `0xb99152d0` | `balanceOfToken(address)`   | Check token balance in controller                  |
+| `0x02dd5f7a` | Unknown                     | Configuration/settings                             |
+| `0x06c2290b` | Unknown                     | Configuration/settings                             |
+| `0x636a47da` | Unknown                     | Likely add to blacklist                            |
+| `0x70e91f47` | Unknown                     | Likely remove from blacklist                       |
+| `0x79eb66d6` | Unknown                     | Likely set operator                                |
+| `0x9e289758` | Unknown                     | Likely toggle mode                                 |
+
+The presence of `withdrawAllETH()` and `withdrawAllToken(address)` confirms this is not just a passive honeypot — it is an **active drain platform** capable of extracting funds.
+
+The controller also contains a hardcoded address `0xaa89589d1416f412ced291af42cf86af007e65e5` (currently inactive, 0 transactions), 6 CALLER-based access control checks, and 44 REVERT paths.
 
 ---
 
@@ -86,15 +110,42 @@ The controller was deployed weeks before RAY, suggesting **reusable honeypot inf
 2. Users buy RAY on Uniswap — transfers succeed because controller allows them
 3. Deployer calls management function (`0xab1b4fa3`) on controller to blacklist target addresses
 4. Blacklisted users attempt to sell → controller reverts → **transfer fails** → tokens are trapped
-5. Deployer sells their own tokens (whitelisted) and drains liquidity
+5. Deployer sells their own tokens (whitelisted)
+6. Deployer calls `withdrawAllETH()` / removes liquidity → **drains all ETH**
+7. Repeat with new token, same controller
 
 ---
 
-## Confirmed Active
+## Damage Report
 
-Internal transactions on Etherscan show `0x478d3305` calls to the controller firing on **every Uniswap swap**, multiple times per minute as of 2026-03-16.
+Data from [DEXScreener](https://dexscreener.com/ethereum/0x9AF762965d8f4f3Ad65C2521b0A090f95bc75121) as of 2026-03-16:
 
-**Evidence:** https://etherscan.io/address/0x9AF762965d8f4f3Ad65C2521b0A090f95bc75121#internaltx
+| Metric             | Value                                |
+| ------------------ | ------------------------------------ |
+| Total volume       | **$49,000**                          |
+| Buy volume         | $32,000                              |
+| Sell volume        | $16,000                              |
+| Unique buyers      | **42 wallets**                       |
+| Total transactions | 76                                   |
+| Buys               | 59                                   |
+| Sells              | 17 (likely deployer's own addresses) |
+| Pair created       | ~12 hours before this disclosure     |
+| Current liquidity  | **$29** (nearly drained)             |
+
+**The rug has already been executed.** The deployer removed ~51.6M RAY tokens and ~17.5 ETH of liquidity. The 17 sell transactions are likely the deployer's own wallets selling before liquidity removal. 42 buyers are now holding tokens worth effectively nothing, with only $29 of liquidity remaining in the pool.
+
+---
+
+## Confirmed Active — Then Rugged
+
+Internal transactions on Etherscan show `0x478d3305` calls to the controller firing on **every Uniswap swap** during the token's active trading period.
+
+The deployer executed the rug approximately 10 hours after token launch by removing liquidity, leaving 42 buyers with worthless tokens and $29 remaining in the pool.
+
+**Evidence:**
+
+- Internal transactions: https://etherscan.io/address/0x9AF762965d8f4f3Ad65C2521b0A090f95bc75121#internaltx
+- DEXScreener: https://dexscreener.com/ethereum/0x9AF762965d8f4f3Ad65C2521b0A090f95bc75121
 
 ---
 
@@ -146,15 +197,18 @@ Details of the algorithm are not disclosed at this time.
 
 ## Timeline
 
-| Date                 | Event                                                    |
-| -------------------- | -------------------------------------------------------- |
-| ~2026-02-02          | Controller contract `0x610b10d3...` deployed             |
-| 2026-03-15           | RAY token deployed, Uniswap liquidity added              |
-| 2026-03-16 02:30 UTC | **Detected by my algorithm** during routine mainnet scan |
-| 2026-03-16 02:54 UTC | Scanner comparison screenshot captured                   |
-| 2026-03-16 03:30 UTC | Reported to Etherscan                                    |
-| 2026-03-16           | This public disclosure                                   |
+| Date                  | Event                                                                  |
+| --------------------- | ---------------------------------------------------------------------- |
+| ~2026-02-02           | Controller contract `0x610b10d3...` deployed (reusable infrastructure) |
+| 2026-03-15            | RAY token deployed, Uniswap liquidity added                            |
+| 2026-03-15/16         | 42 wallets buy RAY, $32K total buy volume                              |
+| 2026-03-16 ~02:00 UTC | Deployer removes liquidity (~17.5 ETH), executes rug                   |
+| 2026-03-16 02:30 UTC  | **Detected by my algorithm** during routine mainnet scan               |
+| 2026-03-16 02:54 UTC  | Scanner comparison screenshot captured                                 |
+| 2026-03-16 03:30 UTC  | Reported to Etherscan                                                  |
+| 2026-03-16 08:00 UTC  | Controller bytecode reverse-engineered, 12 functions identified        |
+| 2026-03-16            | This public disclosure                                                 |
 
 ---
 
-_This disclosure is made in the interest of public safety. Users who hold RAY tokens should be aware that their ability to sell may be revoked at any time by the contract deployer._
+_This disclosure is made in the interest of public safety. The RAY token rug has already been executed — 42 buyers lost approximately $32,000. The controller contract remains active and will likely be reused for future scam tokens. Users should be cautious of any new token whose internal transactions show calls to `0x610b10d3671fef5dad68283a08c19d466da5bf2b`._
